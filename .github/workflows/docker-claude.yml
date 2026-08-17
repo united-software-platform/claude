@@ -1,6 +1,6 @@
 # Сборка и публикация мультиархитектурного образа Claude Code (linux/amd64, linux/arm64)
 # в GitHub Container Registry (GHCR).
-# Единственный источник Dockerfile — docker/claude/Dockerfile, тот же, что использует `make rebuild`.
+# Единственный источник Dockerfile — docker/claude/Dockerfile, тот же, что и при локальной сборке.
 name: docker-claude
 
 on:
@@ -28,7 +28,7 @@ env:
   PROJECT_DIR: /app
   PLATFORMS: linux/amd64,linux/arm64
   # UID/GID фиксированы: в опубликованном образе пользователь claude всегда 1000:1000.
-  # Для другого UID образ пересобирается локально через `make rebuild`
+  # Для другого UID образ пересобирается локально: docker build --build-arg USER_ID=...
   USER_ID: '1000'
   GROUP_ID: '1000'
 

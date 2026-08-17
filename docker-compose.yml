@@ -9,9 +9,12 @@ services:
         GROUP_ID: ${GROUP_ID:-1000}
     image: ${IMAGE:?не задан тег образа}
     # Тег локальный: pull из registry заведомо не найдёт его, а `build` пересобирал
-    # бы образ на каждый `run`. Берётся готовый локальный образ, сборка — `make rebuild`
+    # бы образ на каждый `run`. Берётся готовый локальный образ, сборка — `docker compose build`
     pull_policy: never
+    # Отдельный compose-профиль: `docker compose up` сервисов окружения агента не поднимает
     profiles: ["claude"]
+    # Команда по умолчанию — сам агент; аргумент после имени сервиса её заменяет (bash, git, …)
+    command: claude
     working_dir: ${PROJECT_DIR:-/app}
     env_file: .env
     environment:
