@@ -1,0 +1,41 @@
+# Минимальное подключение Claude Code к стороннему проекту.
+#
+# Единственный файл, который копируется в корень чужого репозитория: образ берётся
+# готовым из GHCR (публикуется .github/workflows/docker-claude.yml), поэтому ни
+# Makefile, ни docker/, ни .bashrc в подключаемом проекте не нужны.
+#
+# Запуск агента:
+#   docker compose -f compose.claude.yml run --rm claude
+# Shell в контейнере (авторизация gh, отладка):
+#   docker compose -f compose.claude.yml run --rm claude bash
+# Другой аккаунт:
+#   CLAUDE_PROFILE=personal docker compose -f compose.claude.yml run --rm claude
+#
+# Каталоги аккаунта и ключей создаются заранее, иначе Docker создаст их
+# от имени root и агент не сможет сохранить авторизацию:
+#   mkdir -p ~/.claude-docker/accounts/work ~/.claude-docker/ssh
+
+services:
+  claude:
+    # Образ опубликован CI; локальная сборка нужна только при UID/GID хоста, отличном от 1000
+    image: ${CLAUDE_IMAGE:-ghcr.io/alexgaib/usp-claude-claude:latest}
+    # Готовый образ скачивается один раз; обновление — явным `docker compose -f compose.claude.yml pull`
+    pull_policy: missing
+    # Отдельный compose-профиль: `docker compose up` проекта агента не поднимает
+    profiles: ["claude"]
+    # Команда по умолчанию — сам агент; аргумент после имени сервиса её заменяет (bash, git, …)
+    command: claude
+    working_dir: ${CLAUDE_PROJECT_DIR:-/app}
+    environment:
+      # Консолидирует весь конфиг (.claude.json, .credentials.json) в смонтированный
+      # каталог аккаунта, иначе авторизация слетает между запусками
+      CLAUDE_CONFIG_DIR: /home/claude/.claude
+
+    volumes:
+      # Рабочее дерево проекта — единственный каталог хоста, доступный агенту
+      - .:${CLAUDE_PROJECT_DIR:-/app}
+      # Профиль аккаунта вне дерева проекта: авторизация переиспользуется всеми
+      # проектами, а чужие профили внутрь контейнера не попадают
+      - ${CLAUDE_ACCOUNTS_DIR:-${HOME}/.claude-docker/accounts}/${CLAUDE_PROFILE:-work}:/home/claude/.claude
+      # Ключи для работы с репозиторием; для ключа, отдельного на проект, — CLAUDE_SSH_DIR=./.ssh
+      - ${CLAUDE_SSH_DIR:-${HOME}/.claude-docker/ssh}:/home/claude/.ssh

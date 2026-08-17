@@ -1,0 +1,188 @@
+# Сборка и публикация мультиархитектурного образа Claude Code (linux/amd64, linux/arm64)
+# в GitHub Container Registry (GHCR).
+# Единственный источник Dockerfile — docker/claude/Dockerfile, тот же, что использует `make rebuild`.
+name: docker-claude
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+    # Пересборка только при изменении самого образа или пайплайна:
+    # правки документации и кода приложения образ не затрагивают
+    paths:
+      - 'docker/claude/**'
+      - '.dockerignore'
+      - '.github/workflows/docker-claude.yml'
+  pull_request:
+    paths:
+      - 'docker/claude/**'
+      - '.dockerignore'
+      - '.github/workflows/docker-claude.yml'
+  workflow_dispatch:
+
+env:
+  DOCKERFILE: docker/claude/Dockerfile
+  PROJECT_DIR: /app
+  PLATFORMS: linux/amd64,linux/arm64
+  # UID/GID фиксированы: в опубликованном образе пользователь claude всегда 1000:1000.
+  # Для другого UID образ пересобирается локально через `make rebuild`
+  USER_ID: '1000'
+  GROUP_ID: '1000'
+
+# Параллельные запуски по одной ссылке отменяются: в реестр публикуется
+# результат последнего коммита, промежуточные сборки не нужны
+concurrency:
+  group: docker-claude-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Каждая архитектура проверяется отдельным заданием: образ с несколькими
+  # платформами нельзя загрузить в локальный демон целиком, а параллельный
+  # запуск не даёт медленной сборке arm64 задерживать amd64
+  check:
+    name: Проверка образа (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            # Слой кэша и проверочный тег адресуются именем без '/'
+            slug: amd64
+          - platform: linux/arm64
+            slug: arm64
+
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@v4
+
+      - name: Определить имя образа
+        id: image
+        # Путь GHCR допускает только строчные буквы, а владелец репозитория
+        # может содержать заглавные — имя приводится к нижнему регистру
+        run: |
+          printf 'name=%s\n' "$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}-claude" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Подготовить QEMU
+        # Раннеры GitHub — x86_64: сборка и запуск arm64 идут через эмуляцию
+        if: matrix.platform != 'linux/amd64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Подготовить Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Собрать образ для проверки
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            PROJECT_DIR=${{ env.PROJECT_DIR }}
+            USER_ID=${{ env.USER_ID }}
+            GROUP_ID=${{ env.GROUP_ID }}
+          load: true
+          tags: ${{ steps.image.outputs.name }}:ci-check-${{ matrix.slug }}
+          # Отдельный scope на архитектуру: общий кэш параллельные
+          # задания перезаписывали бы друг другом
+          cache-from: type=gha,scope=${{ matrix.slug }}
+          cache-to: type=gha,scope=${{ matrix.slug }},mode=max
+
+      - name: Проверить образ
+        # Инструменты образа обязаны запускаться от пользователя claude:
+        # без этого контейнер бесполезен для работы с репозиторием
+        run: |
+          set -eux
+          image="${{ steps.image.outputs.name }}:ci-check-${{ matrix.slug }}"
+          docker run --rm --platform "${{ matrix.platform }}" "$image" id
+          docker run --rm --platform "${{ matrix.platform }}" "$image" claude --version
+          docker run --rm --platform "${{ matrix.platform }}" "$image" git --version
+          docker run --rm --platform "${{ matrix.platform }}" "$image" gh --version
+
+  # Публикация выполняется только после успешной проверки обеих архитектур:
+  # непроверенный образ в GHCR не попадает, а на pull_request публикации нет
+  push:
+    name: Публикация образа в GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: check
+    if: github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+      # Запись в GHCR встроенным GITHUB_TOKEN, отдельные секреты не требуются
+      packages: write
+
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@v4
+
+      - name: Определить имя образа
+        id: image
+        run: |
+          printf 'name=%s\n' "$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}-claude" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Подготовить QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Подготовить Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Рассчитать теги и метки образа
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Войти в GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Слои обеих архитектур берутся из кэша заданий проверки,
+      # поэтому шаг собирает манифест и публикует уже проверенный образ
+      - name: Опубликовать образ
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ env.PLATFORMS }}
+          build-args: |
+            PROJECT_DIR=${{ env.PROJECT_DIR }}
+            USER_ID=${{ env.USER_ID }}
+            GROUP_ID=${{ env.GROUP_ID }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64
+
+      - name: Показать результат публикации
+        run: |
+          {
+            printf '%s\n\n' '## Образ Claude Code опубликован'
+            printf '%s\n\n' "Платформы: \`${{ env.PLATFORMS }}\`"
+            printf '%s\n\n' "Digest: \`${{ steps.push.outputs.digest }}\`"
+            printf '%s\n' 'Теги:'
+            printf '%s\n' '```text'
+            printf '%s\n' '${{ steps.meta.outputs.tags }}'
+            printf '%s\n' '```'
+          } >> "$GITHUB_STEP_SUMMARY"
