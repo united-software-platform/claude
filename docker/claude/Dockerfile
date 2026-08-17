@@ -3,6 +3,9 @@ FROM node:22-slim
 ARG PROJECT_DIR=/app
 ARG USER_ID=1000
 ARG GROUP_ID=1000
+# Версия Claude Code = версия образа. При сборке в CI подставляется конкретный
+# номер: он же становится тегом публикации, поэтому тег и содержимое совпадают
+ARG CLAUDE_CODE_VERSION=latest
 
 WORKDIR ${PROJECT_DIR}
 
@@ -21,7 +24,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 RUN npm install -g npm@latest \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs"
 
 RUN set -eux; \

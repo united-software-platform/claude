@@ -8,8 +8,6 @@ on:
     branches:
       - main
       - master
-    tags:
-      - 'v*'
     # Пересборка только при изменении самого образа или пайплайна:
     # правки документации и кода приложения образ не затрагивают
     paths:
@@ -21,6 +19,11 @@ on:
       - 'docker/claude/**'
       - '.dockerignore'
       - '.github/workflows/docker-claude.yml'
+  # Ежедневная пересборка: новая версия Claude Code и обновления базового образа
+  # приходят из npm и apt, а не из коммитов, поэтому push-триггеры их не ловят.
+  # Время смещено от круглого часа: на нулевой минуте очередь раннеров GitHub перегружена
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 env:
@@ -39,6 +42,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Имя образа и версия CLI вычисляются один раз на весь запуск: проверка и
+  # публикация обязаны собрать и опубликовать одну и ту же версию Claude Code,
+  # иначе тег версии разойдётся с содержимым образа
+  resolve:
+    name: Имя образа и версия Claude Code
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      version: ${{ steps.cli.outputs.version }}
+
+    steps:
+      - name: Определить имя образа
+        id: image
+        # Путь GHCR допускает только строчные буквы, а владелец репозитория
+        # может содержать заглавные — имя приводится к нижнему регистру
+        run: |
+          printf 'name=%s\n' "$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Определить версию Claude Code
+        id: cli
+        # Версия берётся из npm до сборки: подстановка в build-arg делает
+        # содержимое образа воспроизводимым и инвалидирует слой кэша при
+        # выходе новой версии CLI
+        run: |
+          set -eu
+          version="$(npm view @anthropic-ai/claude-code version)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            printf 'Некорректная версия Claude Code из npm: %s\n' "$version" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
   # Каждая архитектура проверяется отдельным заданием: образ с несколькими
   # платформами нельзя загрузить в локальный демон целиком, а параллельный
   # запуск не даёт медленной сборке arm64 задерживать amd64
@@ -46,6 +86,7 @@ jobs:
     name: Проверка образа (${{ matrix.platform }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    needs: resolve
 
     permissions:
       contents: read
@@ -63,13 +104,6 @@ jobs:
     steps:
       - name: Получить исходники
         uses: actions/checkout@v4
-
-      - name: Определить имя образа
-        id: image
-        # Путь GHCR допускает только строчные буквы, а владелец репозитория
-        # может содержать заглавные — имя приводится к нижнему регистру
-        run: |
-          printf 'name=%s\n' "$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}-claude" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Подготовить QEMU
         # Раннеры GitHub — x86_64: сборка и запуск arm64 идут через эмуляцию
@@ -89,8 +123,9 @@ jobs:
             PROJECT_DIR=${{ env.PROJECT_DIR }}
             USER_ID=${{ env.USER_ID }}
             GROUP_ID=${{ env.GROUP_ID }}
+            CLAUDE_CODE_VERSION=${{ needs.resolve.outputs.version }}
           load: true
-          tags: ${{ steps.image.outputs.name }}:ci-check-${{ matrix.slug }}
+          tags: ${{ needs.resolve.outputs.image }}:ci-check-${{ matrix.slug }}
           # Отдельный scope на архитектуру: общий кэш параллельные
           # задания перезаписывали бы друг другом
           cache-from: type=gha,scope=${{ matrix.slug }}
@@ -99,13 +134,19 @@ jobs:
       - name: Проверить образ
         # Инструменты образа обязаны запускаться от пользователя claude:
         # без этого контейнер бесполезен для работы с репозиторием
+        env:
+          EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -eux
-          image="${{ steps.image.outputs.name }}:ci-check-${{ matrix.slug }}"
-          docker run --rm --platform "${{ matrix.platform }}" "$image" id
-          docker run --rm --platform "${{ matrix.platform }}" "$image" claude --version
-          docker run --rm --platform "${{ matrix.platform }}" "$image" git --version
-          docker run --rm --platform "${{ matrix.platform }}" "$image" gh --version
+          image="${{ needs.resolve.outputs.image }}:ci-check-${{ matrix.slug }}"
+          platform="${{ matrix.platform }}"
+          docker run --rm --platform "$platform" "$image" id
+          docker run --rm --platform "$platform" "$image" git --version
+          docker run --rm --platform "$platform" "$image" gh --version
+          # Тег публикации — версия CLI, поэтому расхождение установленной
+          # версии с ожидаемой останавливает пайплайн до попадания в реестр
+          actual="$(docker run --rm --platform "$platform" "$image" claude --version | awk '{print $1}')"
+          test "$actual" = "$EXPECTED_VERSION"
 
   # Публикация выполняется только после успешной проверки обеих архитектур:
   # непроверенный образ в GHCR не попадает, а на pull_request публикации нет
@@ -113,7 +154,7 @@ jobs:
     name: Публикация образа в GHCR
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: check
+    needs: [resolve, check]
     if: github.event_name != 'pull_request'
 
     permissions:
@@ -125,11 +166,6 @@ jobs:
       - name: Получить исходники
         uses: actions/checkout@v4
 
-      - name: Определить имя образа
-        id: image
-        run: |
-          printf 'name=%s\n' "$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}-claude" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
       - name: Подготовить QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -139,14 +175,15 @@ jobs:
       - name: Рассчитать теги и метки образа
         id: meta
         uses: docker/metadata-action@v5
+        # Версионирование образа повторяет версионирование Claude Code:
+        # собственной нумерации у образа нет, git-теги на теги образа не влияют
         with:
-          images: ${{ steps.image.outputs.name }}
+          images: ${{ needs.resolve.outputs.image }}
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
+            type=raw,value=${{ needs.resolve.outputs.version }}
             type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
 
       - name: Войти в GHCR
         uses: docker/login-action@v3
@@ -168,6 +205,7 @@ jobs:
             PROJECT_DIR=${{ env.PROJECT_DIR }}
             USER_ID=${{ env.USER_ID }}
             GROUP_ID=${{ env.GROUP_ID }}
+            CLAUDE_CODE_VERSION=${{ needs.resolve.outputs.version }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -179,6 +217,7 @@ jobs:
         run: |
           {
             printf '%s\n\n' '## Образ Claude Code опубликован'
+            printf '%s\n\n' "Версия Claude Code: \`${{ needs.resolve.outputs.version }}\`"
             printf '%s\n\n' "Платформы: \`${{ env.PLATFORMS }}\`"
             printf '%s\n\n' "Digest: \`${{ steps.push.outputs.digest }}\`"
             printf '%s\n' 'Теги:'
