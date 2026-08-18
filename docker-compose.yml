@@ -1,19 +1,9 @@
 services:
   claude:
-    build:
-      context: .
-      dockerfile: docker/claude/Dockerfile
-      args:
-        PROJECT_DIR: ${PROJECT_DIR:-/app}
-        USER_ID: ${USER_ID:-1000}
-        GROUP_ID: ${GROUP_ID:-1000}
-        # Версия Claude Code в образе: latest — актуальная на момент сборки,
-        # конкретный номер закрепляет версию агента за проектом
-        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
-    image: ${IMAGE:?не задан тег образа}
-    # Тег локальный: pull из registry заведомо не найдёт его, а `build` пересобирал
-    # бы образ на каждый `run`. Берётся готовый локальный образ, сборка — `docker compose build`
-    pull_policy: never
+    # Готовый мультиарх-образ из GHCR: тег latest — последняя опубликованная сборка.
+    # Свой образ (другой UID/GID, дополнительные инструменты, закреплённая версия CLI)
+    # собирается локально, его тег подставляется сюда вместо образа из GHCR — см. README
+    image: ghcr.io/united-software-platform/claude:latest
     # Отдельный compose-профиль: `docker compose up` сервисов окружения агента не поднимает
     profiles: ["claude"]
     # Команда по умолчанию — сам агент; аргумент после имени сервиса её заменяет (bash, git, …)
