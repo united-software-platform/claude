@@ -1,5 +1,11 @@
 # usp-claude
 
+[![docker-claude](https://github.com/united-software-platform/claude/actions/workflows/docker-claude.yml/badge.svg)](https://github.com/united-software-platform/claude/actions/workflows/docker-claude.yml)
+[![Claude Code](https://img.shields.io/npm/v/%40anthropic-ai%2Fclaude-code?label=claude%20code&color=blue)](https://www.npmjs.com/package/@anthropic-ai/claude-code)
+[![image](https://img.shields.io/badge/ghcr.io-united--software--platform%2Fclaude-blue?logo=docker&logoColor=white)](https://github.com/united-software-platform/claude/pkgs/container/claude)
+[![platforms](https://img.shields.io/badge/platforms-linux%2Famd64%20%C2%B7%20linux%2Farm64-blue)](./docker/claude/Dockerfile)
+[![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+
 Окружение для изолированного запуска Claude Code в Docker-контейнере: агент работает только внутри
 каталога проекта, под выбранным аккаунтом и с отдельным SSH-ключом. Окружение не привязано к языку
 и стеку проекта — подключается к любому репозиторию парой файлов.
@@ -105,6 +111,10 @@ docker compose build
 docker pull ghcr.io/united-software-platform/claude:latest
 ```
 
+Тег `latest` всегда указывает на последнюю опубликованную сборку. Актуальный номер версии показывает
+бейдж **claude code** в начале файла — он равен версии Claude Code в образе; полный список
+опубликованных тегов доступен на [странице пакета](https://github.com/united-software-platform/claude/pkgs/container/claude).
+
 ### 3. Сгенерировать SSH-ключ
 
 Ключ проекта лежит в `.ssh/` и монтируется в контейнер:
@@ -207,18 +217,21 @@ docker compose build           # тег и UID/GID берутся из .env
 
 | Тег | Значение |
 |-----|----------|
-| `<версия CLI>` | конкретная версия Claude Code, например `2.1.234` |
+| `<версия CLI>` | версия Claude Code, установленная в этой сборке образа |
 | `latest` | последняя опубликованная сборка из ветки по умолчанию |
 
+Конкретный номер в README не дублируется: он меняется с каждым релизом CLI. Актуальное значение —
+в бейдже **claude code** в начале файла, история тегов — на странице пакета GHCR.
+
 ```bash
-docker pull ghcr.io/united-software-platform/claude:2.1.234
+docker pull ghcr.io/united-software-platform/claude:<версия CLI>
 ```
 
 При локальной сборке версия берётся из переменной `CLAUDE_CODE_VERSION` в `.env` (по умолчанию `latest` —
 актуальная версия CLI на момент сборки):
 
 ```bash
-CLAUDE_CODE_VERSION=2.1.234 docker compose build
+CLAUDE_CODE_VERSION=<версия CLI> docker compose build
 ```
 
 Новая версия Claude Code подхватывается ежедневной пересборкой (`schedule`, 03:17 UTC): новые версии CLI
@@ -262,3 +275,4 @@ MIT — см. [LICENSE](./LICENSE).
 | 3.0.1 | 2026-08-17 | Запрос пользователя: разобраться с дублированием `claude-claude` в имени образа GHCR | Claude Code | Claude Opus 5 | Имя пакета GHCR приведено к `ghcr.io/<владелец>/<репозиторий>` (для этого репозитория — `ghcr.io/united-software-platform/claude`); устаревший пример `ghcr.io/alexgaib/usp-claude-claude:latest` в команде `docker pull` заменён на актуальный |
 | 3.1.0 | 2026-08-17 | Запрос пользователя: версионирование образа по версии Claude CLI, теги `latest` и версия CLI | Claude Code | Claude Opus 5 | Добавлен раздел «Версионирование образа»: версия образа равна версии Claude Code, публикуются теги `<версия CLI>` и `latest`; в таблицу переменных добавлена `CLAUDE_CODE_VERSION` для локальной сборки; зафиксировано ограничение — выход новой версии CLI сам по себе пайплайн не запускает |
 | 3.1.1 | 2026-08-17 | Запрос пользователя: добавить ежедневную пересборку образа | Claude Code | Claude Opus 5 | Описан триггер `schedule` (ежедневно, 03:17 UTC) как способ подхватывать новые версии Claude Code и обновления базового образа; ограничение о неавтоматическом обновлении заменено на предупреждение об изменяемости тега версии и адресации по digest |
+| 3.2.0 | 2026-08-18 | Запрос пользователя: добавить бейджи и актуальную версию образа | Claude Code | Claude Opus 5 | Добавлен блок бейджей после заголовка: статус пайплайна `docker-claude`, версия Claude Code (`shields.io` по npm-пакету `@anthropic-ai/claude-code` — она же версия образа), имя образа в GHCR, поддерживаемые платформы, лицензия. Актуальная версия образа не фиксируется в тексте, а показывается бейджем: в разделе «Получить образ» добавлено пояснение о теге `latest` и ссылка на страницу пакета GHCR, в разделе «Версионирование образа» выдуманные примеры `2.1.234` заменены на плейсхолдер `<версия CLI>` |
