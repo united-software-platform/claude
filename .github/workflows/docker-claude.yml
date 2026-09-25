@@ -225,24 +225,32 @@ jobs:
       # не имеет. Право выдано узко — fine-grained PAT только на репозиторий набора
       # с единственным разрешением Contents: write, — и отзывается независимо от прочих прав.
       #
-      # Неуспех шага публикацию образа не красит: образ опубликован, а недоставленное событие
-      # означает лишь, что набор подхватит выпуск ближайшей плановой пересборкой. Красный шаг
-      # при этом виден в прогоне — молчаливой деградации не происходит.
+      # Неуспех отправки публикацию образа не красит: образ опубликован, а недоставленное событие
+      # означает лишь, что набор подхватит выпуск ближайшей плановой пересборкой.
+      #
+      # Видимость обеспечивается аннотацией ::error::, а не падением шага: continue-on-error
+      # отмечает упавший шаг как успешный, и провал не виден нигде, кроме лога — ровно та
+      # молчаливая деградация, которой здесь быть не должно.
       - name: Уведомление репозитория набора о публикации
         if: github.ref_name == github.event.repository.default_branch
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.SDD_KIT_DISPATCH_TOKEN }}
           VERSION: ${{ needs.resolve.outputs.version }}
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          [ -n "$GH_TOKEN" ] \
-              || { echo "секрет SDD_KIT_DISPATCH_TOKEN не задан: событие не отправлено" >&2; exit 1; }
-          jq -n --arg v "$VERSION" --arg d "$DIGEST" \
-              '{event_type: "base-image-published", client_payload: {version: $v, digest: $d}}' \
-              | gh api repos/united-software-platform/sdd-developer-kit/dispatches \
-                  --method POST --input -
-          echo "Событие base-image-published отправлено: выпуск $VERSION, digest $DIGEST"
+          notify() {
+              [ -n "$GH_TOKEN" ] \
+                  || { echo "секрет SDD_KIT_DISPATCH_TOKEN пуст или не задан" >&2; return 1; }
+              jq -n --arg v "$VERSION" --arg d "$DIGEST" \
+                  '{event_type: "base-image-published", client_payload: {version: $v, digest: $d}}' \
+                  | gh api repos/united-software-platform/sdd-developer-kit/dispatches \
+                      --method POST --input -
+          }
+          if notify; then
+              echo "Событие base-image-published отправлено: выпуск $VERSION, digest $DIGEST"
+          else
+              echo "::error title=Событие о публикации не отправлено::Репозиторий набора не уведомлён о выпуске $VERSION; он подхватит его ближайшей плановой пересборкой"
+          fi
 
       - name: Показать результат публикации
         run: |
